@@ -1,19 +1,22 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const { nanoid } = require('nanoid');
+const jwt = require('jsonwebtoken');
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
 
 const app = express();
 const port = 3000;
 
+const JWT_SECRET = 'your-secret-key';
+
 const swaggerOptions = {
     definition: {
         openapi: '3.0.0',
         info: {
             title: 'API Auth + Products',
-            version: '1.0.0',
-            description: 'Авторизация + CRUD товаров',
+            version: '2.0.0',
+            description: 'Авторизация с JWT токенами + CRUD товаров',
         },
         servers: [{ url: `http://localhost:${port}` }],
     },
@@ -23,7 +26,6 @@ const swaggerOptions = {
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-
 let users = [];
 let products = [];
 
@@ -32,12 +34,29 @@ app.use(express.json());
 app.use((req, res, next) => {
     res.on('finish', () => {
         console.log(`[${new Date().toISOString()}] [${req.method}] ${res.statusCode} ${req.path}`);
-        if (req.method === 'POST' && req.body) {
+        if (req.method === 'POST' && req.body && !req.body.password) {
             console.log('Body:', req.body);
         }
     });
     next();
 });
+
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: 'Access token required' });
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.status(403).json({ error: 'Invalid or expired token' });
+        }
+        req.user = user;
+        next();
+    });
+}
 
 async function hashPassword(password) {
     const rounds = 10;
@@ -55,36 +74,6 @@ function findUserByEmail(email) {
 function findUserById(id) {
     return users.find(u => u.id === id);
 }
-
-/**
- * @swagger
- * components:
- *   schemas:
- *     User:
- *       type: object
- *       properties:
- *         id:
- *           type: string
- *         email:
- *           type: string
- *         first_name:
- *           type: string
- *         last_name:
- *           type: string
- *     Product:
- *       type: object
- *       properties:
- *         id:
- *           type: string
- *         title:
- *           type: string
- *         category:
- *           type: string
- *         description:
- *           type: string
- *         price:
- *           type: number
- */
 
 /**
  * @swagger
@@ -111,7 +100,6 @@ function findUserById(id) {
  *       201:
  *         description: Пользователь создан
  */
-
 app.post("/api/auth/register", async (req, res) => {
     const { email, first_name, last_name, password } = req.body;
 
@@ -160,9 +148,17 @@ app.post("/api/auth/register", async (req, res) => {
  *                 type: string
  *     responses:
  *       200:
- *         description: Успешный вход
+ *         description: Успешный вход, возвращает токен
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token:
+ *                   type: string
+ *                 user:
+ *                   type: object
  */
-
 app.post("/api/auth/login", async (req, res) => {
     const { email, password } = req.body;
 
@@ -176,43 +172,72 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const isAuthenticated = await verifyPassword(password, user.hashedPassword);
-    if (isAuthenticated) {
-        res.status(200).json({ 
-            login: true, 
-            user: {
-                id: user.id,
-                email: user.email,
-                first_name: user.first_name,
-                last_name: user.last_name
-            }
-        });
-    } else {
-        res.status(401).json({ error: "Invalid credentials" });
+    if (!isAuthenticated) {
+        return res.status(401).json({ error: "Invalid credentials" });
     }
+
+    const token = jwt.sign(
+        { 
+            id: user.id, 
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+        },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+    );
+
+    res.status(200).json({
+        token: token,
+        user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+        }
+    });
 });
 
 /**
  * @swagger
- * /api/products:
+ * /api/auth/me:
  *   get:
- *     summary: Получить все товары
+ *     summary: Получить информацию о текущем пользователе
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Список товаров
+ *         description: Объект текущего пользователя
+ *       401:
+ *         description: Токен не предоставлен
+ *       403:
+ *         description: Токен недействителен
+ */
+app.get("/api/auth/me", authenticateToken, (req, res) => {
+    res.json({
+        id: req.user.id,
+        email: req.user.email,
+        first_name: req.user.first_name,
+        last_name: req.user.last_name
+    });
+});
+
+
+/**
+ * @swagger
+ * /api/products:
  *   post:
- *     summary: Создать товар
+ *     summary: Создать товар (требуется токен)
+ *     security:
+ *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [email, password, title, category, description, price]
+ *             required: [title, category, description, price]
  *             properties:
- *               email:
- *                 type: string
- *               password:
- *                 type: string
  *               title:
  *                 type: string
  *               category:
@@ -221,23 +246,16 @@ app.post("/api/auth/login", async (req, res) => {
  *                 type: string
  *               price:
  *                 type: number
+ *     responses:
+ *       201:
+ *         description: Товар создан
  */
+app.post("/api/products", authenticateToken, async (req, res) => {
+    const { title, category, description, price } = req.body;
+    const userId = req.user.id;
 
-app.post("/api/products", async (req, res) => {
-    const { email, password, title, category, description, price } = req.body;
-
-    if (!email || !password || !title || !category || !description || !price) {
-        return res.status(400).json({ error: "All fields required: email, password, title, category, description, price" });
-    }
-
-    const user = findUserByEmail(email);
-    if (!user) {
-        return res.status(404).json({ error: "User not found" });
-    }
-
-    const isAuth = await verifyPassword(password, user.hashedPassword);
-    if (!isAuth) {
-        return res.status(401).json({ error: "Invalid password" });
+    if (!title || !category || !description || !price) {
+        return res.status(400).json({ error: "title, category, description, price are required" });
     }
 
     const newProduct = {
@@ -246,7 +264,7 @@ app.post("/api/products", async (req, res) => {
         category,
         description,
         price: Number(price),
-        ownerId: user.id
+        ownerId: userId
     };
 
     products.push(newProduct);
@@ -261,17 +279,36 @@ app.get("/api/products", (req, res) => {
  * @swagger
  * /api/products/{id}:
  *   get:
- *     summary: Получить товар по ID
+ *     summary: Получить товар по ID (требуется токен)
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
  *         schema:
  *           type: string
- *         example: "7NXht0wP"
- *         description: "ID товара (8 символов)"
+ *     responses:
+ *       200:
+ *         description: Товар найден
+ *       404:
+ *         description: Товар не найден
+ */
+app.get("/api/products/:id", authenticateToken, (req, res) => {
+    const product = products.find(p => p.id === req.params.id);
+    if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+    }
+    res.json(product);
+});
+
+/**
+ * @swagger
+ * /api/products/{id}:
  *   put:
- *     summary: Обновить товар
+ *     summary: Обновить товар (требуется токен, только владелец)
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -285,10 +322,6 @@ app.get("/api/products", (req, res) => {
  *           schema:
  *             type: object
  *             properties:
- *               email:
- *                 type: string
- *               password:
- *                 type: string
  *               title:
  *                 type: string
  *               category:
@@ -297,43 +330,11 @@ app.get("/api/products", (req, res) => {
  *                 type: string
  *               price:
  *                 type: number
- *   delete:
- *     summary: Удалить товар
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [email, password]
- *             properties:
- *               email:
- *                 type: string
- *               password:
- *                 type: string
  */
-
-app.get("/api/products/:id", (req, res) => {
-    const product = products.find(p => p.id === req.params.id);
-    if (!product) {
-        return res.status(404).json({ error: "Product not found" });
-    }
-    res.json(product);
-});
-
-app.put("/api/products/:id", async (req, res) => {
-    const { email, password, title, category, description, price } = req.body;
+app.put("/api/products/:id", authenticateToken, async (req, res) => {
+    const { title, category, description, price } = req.body;
     const productId = req.params.id;
-
-    if (!email || !password) {
-        return res.status(400).json({ error: "email and password are required for authentication" });
-    }
+    const userId = req.user.id;
 
     const productIndex = products.findIndex(p => p.id === productId);
     if (productIndex === -1) {
@@ -341,19 +342,9 @@ app.put("/api/products/:id", async (req, res) => {
     }
 
     const product = products[productIndex];
-    const user = findUserByEmail(email);
     
-    if (!user) {
-        return res.status(404).json({ error: "User not found" });
-    }
-
-    if (product.ownerId !== user.id) {
+    if (product.ownerId !== userId) {
         return res.status(403).json({ error: "You can only update your own products" });
-    }
-
-    const isAuth = await verifyPassword(password, user.hashedPassword);
-    if (!isAuth) {
-        return res.status(401).json({ error: "Invalid password" });
     }
 
     if (title !== undefined) product.title = title;
@@ -364,13 +355,23 @@ app.put("/api/products/:id", async (req, res) => {
     res.json(product);
 });
 
-app.delete("/api/products/:id", async (req, res) => {
-    const { email, password } = req.body;
+/**
+ * @swagger
+ * /api/products/{id}:
+ *   delete:
+ *     summary: Удалить товар
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ */
+app.delete("/api/products/:id", authenticateToken, async (req, res) => {
     const productId = req.params.id;
-
-    if (!email || !password) {
-        return res.status(400).json({ error: "email and password required" });
-    }
+    const userId = req.user.id;
 
     const productIndex = products.findIndex(p => p.id === productId);
     if (productIndex === -1) {
@@ -378,24 +379,25 @@ app.delete("/api/products/:id", async (req, res) => {
     }
 
     const product = products[productIndex];
-    const user = findUserByEmail(email);
     
-    if (!user) {
-        return res.status(404).json({ error: "User not found" });
-    }
-
-    if (product.ownerId !== user.id) {
+    if (product.ownerId !== userId) {
         return res.status(403).json({ error: "You can only delete your own products" });
-    }
-
-    const isAuth = await verifyPassword(password, user.hashedPassword);
-    if (!isAuth) {
-        return res.status(401).json({ error: "Invalid password" });
     }
 
     products.splice(productIndex, 1);
     res.json({ message: "Product deleted successfully" });
 });
+
+const swaggerDocument = swaggerSpec;
+swaggerDocument.components = {
+    securitySchemes: {
+        bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT'
+        }
+    }
+};
 
 app.listen(port, () => {
     console.log(`Сервер: http://localhost:${port}`);

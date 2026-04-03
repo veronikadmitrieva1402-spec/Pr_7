@@ -4,6 +4,7 @@ const { nanoid } = require('nanoid');
 const jwt = require('jsonwebtoken');
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
+const cors = require('cors');
 
 const app = express();
 const port = 3000;
@@ -46,6 +47,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 
 app.use(express.json());
+app.use(cors());
 
 app.use((req, res, next) => {
     res.on('finish', () => {
@@ -89,7 +91,7 @@ function authenticateToken(req, res, next) {
         return res.status(401).json({ error: 'Access token required' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    jwt.verify(token, ACCESS_SECRET, (err, user) => {
         if (err) {
             return res.status(403).json({ error: 'Invalid or expired token' });
         }

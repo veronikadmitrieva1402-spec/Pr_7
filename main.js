@@ -8,7 +8,16 @@ const swaggerUi = require('swagger-ui-express');
 const app = express();
 const port = 3000;
 
-const JWT_SECRET = 'your-secret-key';
+const ACCESS_SECRET = 'access_secret_key';
+const REFRESH_SECRET = 'refresh-secret-key';
+
+const ACCESS_EXPIRES_IN = '15m';
+const REFRESH_EXPIRES_IN = '7d';
+
+let users = [];
+let products = [];
+
+let refreshTokens = new Set();
 
 const swaggerOptions = {
     definition: {
@@ -16,9 +25,18 @@ const swaggerOptions = {
         info: {
             title: 'API Auth + Products',
             version: '2.0.0',
-            description: 'Авторизация с JWT токенами + CRUD товаров',
+            description: 'Контрольная номер 2',
         },
         servers: [{ url: `http://localhost:${port}` }],
+        components: {
+            securitySchemes: {
+                bearerAuth: {
+                    type: 'http',
+                    scheme: 'bearer',
+                    bearerFormat: 'JWT'
+                }
+            }
+        }
     },
     apis: ['./main.js'],
 };
@@ -26,8 +44,6 @@ const swaggerOptions = {
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-let users = [];
-let products = [];
 
 app.use(express.json());
 
@@ -40,6 +56,30 @@ app.use((req, res, next) => {
     });
     next();
 });
+
+function generateAccessToken(user) {
+    return jwt.sign(
+        {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name
+        },
+        ACCESS_SECRET,
+        { expiresIn: ACCESS_EXPIRES_IN }
+    );
+}
+
+function generateRefreshToken(user) {
+    return jwt.sign(
+        {
+            id: user.id,
+            email: user.email
+        },
+        REFRESH_SECRET,
+        { expiresIn: REFRESH_EXPIRES_IN }
+    );
+}
 
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
@@ -176,19 +216,14 @@ app.post("/api/auth/login", async (req, res) => {
         return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    const token = jwt.sign(
-        { 
-            id: user.id, 
-            email: user.email,
-            first_name: user.first_name,
-            last_name: user.last_name
-        },
-        JWT_SECRET,
-        { expiresIn: '24h' }
-    );
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+
+    refreshTokens.add(refreshToken);
 
     res.status(200).json({
-        token: token,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
         user: {
             id: user.id,
             email: user.email,
@@ -197,6 +232,74 @@ app.post("/api/auth/login", async (req, res) => {
         }
     });
 });
+/**
+ * @swagger
+ * /api/auth/refresh:
+ *   post:
+ *     summary: Обновить accessToken и refreshToken
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [refreshToken]
+ *             properties:
+ *               refreshToken:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Новая пара токенов
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 accessToken:
+ *                   type: string
+ *                 refreshToken:
+ *                   type: string
+ *       400:
+ *         description: refreshToken не предоставлен
+ *       401:
+ *         description: Невалидный или просроченный refreshToken
+ */
+
+app.post("/api/auth/refresh", (req, res) => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        return res.status(400).json({error: "refresh is required"});
+    }
+
+    if (!refreshTokens.has(refreshToken)) {
+        return res.status(401).json({error: "invalid"});
+    }
+
+    try {
+        const payload = jwt.verify(refreshToken, REFRESH_SECRET);
+        const user = findUserById(payload.id);
+
+        if (!user) {
+            return res.status(401).json({error: "User not found"});
+        }
+
+        refreshTokens.delete(refreshToken);
+
+        const newAccessToken = generateAccessToken(user);
+        const newRefreshToken = generateRefreshToken(user);
+
+        refreshTokens.add(newRefreshToken);
+
+        res.json({
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken
+        });
+    } catch (err) {
+        return res.status(401).json({ error: "Invalid"});
+    }
+});
+
 
 /**
  * @swagger
@@ -315,21 +418,6 @@ app.get("/api/products/:id", authenticateToken, (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               title:
- *                 type: string
- *               category:
- *                 type: string
- *               description:
- *                 type: string
- *               price:
- *                 type: number
  */
 app.put("/api/products/:id", authenticateToken, async (req, res) => {
     const { title, category, description, price } = req.body;
@@ -387,17 +475,6 @@ app.delete("/api/products/:id", authenticateToken, async (req, res) => {
     products.splice(productIndex, 1);
     res.json({ message: "Product deleted successfully" });
 });
-
-const swaggerDocument = swaggerSpec;
-swaggerDocument.components = {
-    securitySchemes: {
-        bearerAuth: {
-            type: 'http',
-            scheme: 'bearer',
-            bearerFormat: 'JWT'
-        }
-    }
-};
 
 app.listen(port, () => {
     console.log(`Сервер: http://localhost:${port}`);

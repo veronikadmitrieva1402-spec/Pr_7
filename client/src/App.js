@@ -5,6 +5,7 @@ import Login from './components/Login';
 import Register from './components/Register';
 import Products from './components/Products';
 import ProductDetail from './components/ProductDetail';
+import Users from './components/Users';
 import { authAPI } from './services/api';
 import './App.css';
 
@@ -29,6 +30,8 @@ function App() {
         checkAuth();
     }, []);
 
+    const isAdmin = user?.role === 'admin';
+
     if (loading) {
         return <div className="loading">Загрузка...</div>;
     }
@@ -45,10 +48,13 @@ function App() {
                         user ? <Navigate to="/products" /> : <Register />
                     } />
                     <Route path="/products" element={
-                        user ? <Products /> : <Navigate to="/login" />
+                        user ? <Products userRole={user?.role} /> : <Navigate to="/login" />
                     } />
                     <Route path="/products/:id" element={
-                        user ? <ProductDetail /> : <Navigate to="/login" />
+                        user ? <ProductDetail userRole={user?.role} /> : <Navigate to="/login" />
+                    } />
+                    <Route path="/users" element={
+                        isAdmin ? <Users /> : <Navigate to="/products" />
                     } />
                     <Route path="/" element={
                         <Navigate to={user ? "/products" : "/login"} />

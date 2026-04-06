@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { productsAPI } from '../services/api';
 
-function ProductDetail() {
+function ProductDetail({ userRole }) {
     const { id } = useParams();
     const navigate = useNavigate();
     const [product, setProduct] = useState(null);
@@ -11,7 +11,10 @@ function ProductDetail() {
     const [isEditing, setIsEditing] = useState(false);
     const [editData, setEditData] = useState({});
 
-    const fetchProduct = async () => {
+    const canEdit = userRole === 'seller' || userRole === 'admin';
+    const canDelete = userRole === 'admin';
+
+    const fetchProduct = useCallback(async () => {
         try {
             setLoading(true);
             const response = await productsAPI.getById(id);
@@ -22,14 +25,18 @@ function ProductDetail() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [id]);
 
     useEffect(() => {
         fetchProduct();
-    }, [id]);
+    }, [fetchProduct]);
 
     const handleUpdate = async (e) => {
         e.preventDefault();
+        if (!canEdit) {
+            alert('У вас нет прав на редактирование');
+            return;
+        }
         try {
             await productsAPI.update(id, {
                 title: editData.title,
@@ -45,6 +52,10 @@ function ProductDetail() {
     };
 
     const handleDelete = async () => {
+        if (!canDelete) {
+            alert('Только администратор может удалять товары');
+            return;
+        }
         if (window.confirm('Удалить товар?')) {
             try {
                 await productsAPI.delete(id);
@@ -55,8 +66,8 @@ function ProductDetail() {
         }
     };
 
-    if (loading) return <div style={styles.center}>Загрузка...</div>;
-    if (error) return <div style={styles.center}>{error}</div>;
+    if (loading) return <div>Загрузка...</div>;
+    if (error) return <div>{error}</div>;
     if (!product) return null;
 
     return (
@@ -65,7 +76,7 @@ function ProductDetail() {
                 ← Назад
             </button>
 
-            {isEditing ? (
+            {isEditing && canEdit ? (
                 <form onSubmit={handleUpdate} style={styles.form}>
                     <h2>Редактирование товара</h2>
                     <input
@@ -97,9 +108,7 @@ function ProductDetail() {
                     />
                     <div style={styles.formButtons}>
                         <button type="submit" style={styles.saveButton}>Сохранить</button>
-                        <button type="button" onClick={() => setIsEditing(false)} style={styles.cancelButton}>
-                            Отмена
-                        </button>
+                        <button type="button" onClick={() => setIsEditing(false)} style={styles.cancelButton}>Отмена</button>
                     </div>
                 </form>
             ) : (
@@ -109,12 +118,16 @@ function ProductDetail() {
                     <p style={styles.description}>{product.description}</p>
                     <p style={styles.price}>{product.price} ₽</p>
                     <div style={styles.buttons}>
-                        <button onClick={() => setIsEditing(true)} style={styles.editButton}>
-                            Редактировать
-                        </button>
-                        <button onClick={handleDelete} style={styles.deleteButton}>
-                            Удалить
-                        </button>
+                        {canEdit && (
+                            <button onClick={() => setIsEditing(true)} style={styles.editButton}>
+                                Редактировать
+                            </button>
+                        )}
+                        {canDelete && (
+                            <button onClick={handleDelete} style={styles.deleteButton}>
+                                Удалить
+                            </button>
+                        )}
                     </div>
                 </>
             )}
@@ -123,100 +136,20 @@ function ProductDetail() {
 }
 
 const styles = {
-    container: {
-        padding: '20px',
-        maxWidth: '800px',
-        margin: '0 auto',
-    },
-    backButton: {
-        padding: '10px 20px',
-        backgroundColor: '#6c757d',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        marginBottom: '20px',
-    },
-    category: {
-        color: '#666',
-        fontSize: '16px',
-    },
-    description: {
-        margin: '20px 0',
-        lineHeight: '1.5',
-    },
-    price: {
-        fontSize: '28px',
-        fontWeight: 'bold',
-        color: '#28a745',
-    },
-    buttons: {
-        marginTop: '30px',
-        display: 'flex',
-        gap: '10px',
-    },
-    editButton: {
-        padding: '10px 20px',
-        backgroundColor: '#ffc107',
-        color: '#333',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-    },
-    deleteButton: {
-        padding: '10px 20px',
-        backgroundColor: '#dc3545',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-    },
-    form: {
-        padding: '20px',
-        border: '1px solid #ddd',
-        borderRadius: '8px',
-    },
-    input: {
-        width: '100%',
-        padding: '10px',
-        marginBottom: '15px',
-        border: '1px solid #ddd',
-        borderRadius: '4px',
-        boxSizing: 'border-box',
-    },
-    textarea: {
-        width: '100%',
-        padding: '10px',
-        marginBottom: '15px',
-        border: '1px solid #ddd',
-        borderRadius: '4px',
-        boxSizing: 'border-box',
-        minHeight: '100px',
-    },
-    formButtons: {
-        display: 'flex',
-        gap: '10px',
-    },
-    saveButton: {
-        padding: '10px 20px',
-        backgroundColor: '#28a745',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-    },
-    cancelButton: {
-        padding: '10px 20px',
-        backgroundColor: '#6c757d',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-    },
-    center: {
-        textAlign: 'center',
-        marginTop: '50px',
-    },
+    container: { padding: '20px', maxWidth: '800px', margin: '0 auto' },
+    backButton: { padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginBottom: '20px' },
+    category: { color: '#666', fontSize: '16px' },
+    description: { margin: '20px 0', lineHeight: '1.5' },
+    price: { fontSize: '28px', fontWeight: 'bold', color: '#28a745' },
+    buttons: { marginTop: '30px', display: 'flex', gap: '10px' },
+    editButton: { padding: '10px 20px', backgroundColor: '#ffc107', color: '#333', border: 'none', borderRadius: '4px', cursor: 'pointer' },
+    deleteButton: { padding: '10px 20px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' },
+    form: { padding: '20px', border: '1px solid #ddd', borderRadius: '8px' },
+    input: { width: '100%', padding: '10px', marginBottom: '15px', border: '1px solid #ddd', borderRadius: '4px', boxSizing: 'border-box' },
+    textarea: { width: '100%', padding: '10px', marginBottom: '15px', border: '1px solid #ddd', borderRadius: '4px', boxSizing: 'border-box', minHeight: '100px' },
+    formButtons: { display: 'flex', gap: '10px' },
+    saveButton: { padding: '10px 20px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' },
+    cancelButton: { padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }
 };
 
 export default ProductDetail;

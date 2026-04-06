@@ -57,6 +57,11 @@ apiClient.interceptors.response.use(
             }
         }
 
+        if (error.response?.status === 403) {
+            const message = error.response?.data?.error || 'Access denied';
+            alert(message);
+        }
+
         return Promise.reject(error);
     }
 );
@@ -66,6 +71,13 @@ export const authAPI = {
     login: (credentials) => apiClient.post('/auth/login', credentials),
     getMe: () => apiClient.get('/auth/me'),
     refresh: (refreshToken) => apiClient.post('/auth/refresh', { refreshToken }),
+};
+
+export const usersAPI = {
+    getAll: () => apiClient.get('/users'),
+    getById: (id) => apiClient.get(`/users/${id}`),
+    update: (id, data) => apiClient.put(`/users/${id}`, data),
+    delete: (id) => apiClient.delete(`/users/${id}`),
 };
 
 export const productsAPI = {

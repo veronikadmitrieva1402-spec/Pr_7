@@ -11,6 +11,9 @@ function Navbar({ user, setUser }) {
         navigate('/login');
     };
 
+    const isAdmin = user?.role === 'admin';
+    const isSeller = user?.role === 'seller' || isAdmin;
+
     return (
         <nav style={{
             padding: '10px 20px',
@@ -25,11 +28,16 @@ function Navbar({ user, setUser }) {
                 {user && (
                     <Link to="/products" style={{ color: 'white', textDecoration: 'none' }}>Товары</Link>
                 )}
+                {isAdmin && (
+                    <Link to="/users" style={{ color: 'white', marginLeft: '15px', textDecoration: 'none' }}>Пользователи</Link>
+                )}
             </div>
             <div>
                 {user ? (
                     <>
-                        <span style={{ marginRight: '15px' }}>{user.first_name}</span>
+                        <span style={{ marginRight: '15px' }}>
+                            {user.first_name} ({user.role === 'admin' ? 'Админ' : user.role === 'seller' ? 'Продавец' : 'Пользователь'})
+                        </span>
                         <button onClick={handleLogout} style={{ padding: '5px 10px' }}>Выйти</button>
                     </>
                 ) : (

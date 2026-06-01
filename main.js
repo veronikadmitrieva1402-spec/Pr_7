@@ -5,13 +5,84 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
+const redis = require('redis');
 
 const app = express();
 const port = 3000;
 
+const redisClient = redis.createClient({
+    host: 'localhost',
+    port: 6379
+});
+
+redisClient.on('error', (err) => console.error('Redis error:', err));
+redisClient.on('connect', () => console.log('Connected to Redis'));
+
+const USERS_CACHE_TTL = 60;
+const PRODUCTS_CACHE_TTL = 600;
+
+function cacheMiddleware(keyBuilder, ttl) {
+    return async (req, res, next) => {
+        try {
+            const key = keyBuilder(req);
+            redisClient.get(key, (err, cachedData) => {
+                if (err) {
+                    console.error('Cache read error:', err);
+                    return next();
+                }
+                
+                if (cachedData) {
+                    console.log(`Cache HIT: ${key}`);
+                    return res.json(JSON.parse(cachedData));
+                }
+                
+                console.log(`Cache MISS: ${key}`);
+                req.cacheKey = key;
+                req.cacheTTL = ttl;
+                next();
+            });
+        } catch (err) {
+            console.error('Cache middleware error:', err);
+            next();
+        }
+    };
+}
+
+async function saveToCache(key, data, ttl) {
+    try {
+        redisClient.setex(key, ttl, JSON.stringify(data));
+        console.log(`Saved to cache: ${key} (TTL: ${ttl}s)`);
+    } catch (err) {
+        console.error('Cache save error:', err);
+    }
+}
+
+async function invalidateUsersCache(userId = null) {
+    try {
+        redisClient.del('users:all');
+        if (userId) {
+            redisClient.del(`users:${userId}`);
+        }
+        console.log(`Cache invalidated: users${userId ? `:${userId}` : ':all'}`);
+    } catch (err) {
+        console.error('Cache invalidate error:', err);
+    }
+}
+
+async function invalidateProductsCache(productId = null) {
+    try {
+        redisClient.del('products:all');
+        if (productId) {
+            redisClient.del(`products:${productId}`);
+        }
+        console.log(`Cache invalidated: products${productId ? `:${productId}` : ':all'}`);
+    } catch (err) {
+        console.error('Cache invalidate error:', err);
+    }
+}
+
 const ACCESS_SECRET = 'access_secret_key_2025';
 const REFRESH_SECRET = 'refresh_secret_key_2025';
-
 const ACCESS_EXPIRES_IN = '15m';
 const REFRESH_EXPIRES_IN = '7d';
 
@@ -121,7 +192,7 @@ const swaggerOptions = {
         info: {
             title: 'API Auth + Products + RBAC',
             version: '4.0.0',
-            description: 'Авторизация с ролями (USER, SELLER, ADMIN)',
+            description: 'Авторизация с ролями (USER, SELLER, ADMIN) + Redis кэш',
         },
         servers: [{ url: `http://localhost:${port}` }],
         components: {
@@ -161,7 +232,6 @@ app.post("/api/auth/register", async (req, res) => {
             finalRole = ROLES.USER;
         }
     }
-    
 
     const newUser = {
         id: nanoid(8),
@@ -265,33 +335,45 @@ app.get("/api/auth/me", authMiddleware, (req, res) => {
     });
 });
 
-
-app.get("/api/users", authMiddleware, roleMiddleware([ROLES.ADMIN]), (req, res) => {
-    const safeUsers = users.map(u => ({
-        id: u.id,
-        email: u.email,
-        first_name: u.first_name,
-        last_name: u.last_name,
-        role: u.role,
-        isBlocked: u.isBlocked
-    }));
-    res.json(safeUsers);
-});
-
-app.get("/api/users/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), (req, res) => {
-    const user = findUserById(req.params.id);
-    if (!user) {
-        return res.status(404).json({ error: "User not found" });
+app.get("/api/users", 
+    authMiddleware, 
+    roleMiddleware([ROLES.ADMIN]),
+    cacheMiddleware(() => 'users:all', USERS_CACHE_TTL),
+    async (req, res) => {
+        const safeUsers = users.map(u => ({
+            id: u.id,
+            email: u.email,
+            first_name: u.first_name,
+            last_name: u.last_name,
+            role: u.role,
+            isBlocked: u.isBlocked
+        }));
+        await saveToCache(req.cacheKey, safeUsers, req.cacheTTL);
+        res.json(safeUsers);
     }
-    res.json({
-        id: user.id,
-        email: user.email,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        role: user.role,
-        isBlocked: user.isBlocked
-    });
-});
+);
+
+app.get("/api/users/:id", 
+    authMiddleware, 
+    roleMiddleware([ROLES.ADMIN]),
+    cacheMiddleware((req) => `users:${req.params.id}`, USERS_CACHE_TTL),
+    async (req, res) => {
+        const user = findUserById(req.params.id);
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+        const safeUser = {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            role: user.role,
+            isBlocked: user.isBlocked
+        };
+        await saveToCache(req.cacheKey, safeUser, req.cacheTTL);
+        res.json(safeUser);
+    }
+);
 
 app.put("/api/users/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), async (req, res) => {
     const user = findUserById(req.params.id);
@@ -308,6 +390,8 @@ app.put("/api/users/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), async (
     }
     if (isBlocked !== undefined) user.isBlocked = isBlocked;
 
+    await invalidateUsersCache(req.params.id);
+
     res.json({
         id: user.id,
         email: user.email,
@@ -318,17 +402,20 @@ app.put("/api/users/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), async (
     });
 });
 
-app.delete("/api/users/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), (req, res) => {
+app.delete("/api/users/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), async (req, res) => {
     const user = findUserById(req.params.id);
     if (!user) {
         return res.status(404).json({ error: "User not found" });
     }
     
     user.isBlocked = true;
+    
+    await invalidateUsersCache(req.params.id);
+    
     res.json({ message: "User blocked successfully", user: { id: user.id, isBlocked: true } });
 });
 
-app.post("/api/products", authMiddleware, roleMiddleware([ROLES.SELLER, ROLES.ADMIN]), (req, res) => {
+app.post("/api/products", authMiddleware, roleMiddleware([ROLES.SELLER, ROLES.ADMIN]), async (req, res) => {
     const { title, category, description, price } = req.body;
     const userId = req.user.id;
 
@@ -346,22 +433,37 @@ app.post("/api/products", authMiddleware, roleMiddleware([ROLES.SELLER, ROLES.AD
     };
 
     products.push(newProduct);
+    
+    await invalidateProductsCache();
+    
     res.status(201).json(newProduct);
 });
 
-app.get("/api/products", authMiddleware, roleMiddleware([ROLES.USER, ROLES.SELLER, ROLES.ADMIN]), (req, res) => {
-    res.json(products);
-});
-
-app.get("/api/products/:id", authMiddleware, roleMiddleware([ROLES.USER, ROLES.SELLER, ROLES.ADMIN]), (req, res) => {
-    const product = products.find(p => p.id === req.params.id);
-    if (!product) {
-        return res.status(404).json({ error: "Product not found" });
+app.get("/api/products", 
+    authMiddleware, 
+    roleMiddleware([ROLES.USER, ROLES.SELLER, ROLES.ADMIN]),
+    cacheMiddleware(() => 'products:all', PRODUCTS_CACHE_TTL),
+    async (req, res) => {
+        await saveToCache(req.cacheKey, products, req.cacheTTL);
+        res.json(products);
     }
-    res.json(product);
-});
+);
 
-app.put("/api/products/:id", authMiddleware, roleMiddleware([ROLES.SELLER, ROLES.ADMIN]), (req, res) => {
+app.get("/api/products/:id", 
+    authMiddleware, 
+    roleMiddleware([ROLES.USER, ROLES.SELLER, ROLES.ADMIN]),
+    cacheMiddleware((req) => `products:${req.params.id}`, PRODUCTS_CACHE_TTL),
+    async (req, res) => {
+        const product = products.find(p => p.id === req.params.id);
+        if (!product) {
+            return res.status(404).json({ error: "Product not found" });
+        }
+        await saveToCache(req.cacheKey, product, req.cacheTTL);
+        res.json(product);
+    }
+);
+
+app.put("/api/products/:id", authMiddleware, roleMiddleware([ROLES.SELLER, ROLES.ADMIN]), async (req, res) => {
     const { title, category, description, price } = req.body;
     const productId = req.params.id;
     const userId = req.user.id;
@@ -383,10 +485,12 @@ app.put("/api/products/:id", authMiddleware, roleMiddleware([ROLES.SELLER, ROLES
     if (description !== undefined) product.description = description;
     if (price !== undefined) product.price = Number(price);
 
+    await invalidateProductsCache(productId);
+
     res.json(product);
 });
 
-app.delete("/api/products/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), (req, res) => {
+app.delete("/api/products/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), async (req, res) => {
     const productId = req.params.id;
     const productIndex = products.findIndex(p => p.id === productId);
     
@@ -395,12 +499,22 @@ app.delete("/api/products/:id", authMiddleware, roleMiddleware([ROLES.ADMIN]), (
     }
 
     products.splice(productIndex, 1);
+    
+    await invalidateProductsCache(productId);
+    
     res.json({ message: "Product deleted successfully" });
 });
 
 app.listen(port, () => {
-    console.log(`Сервер: http://localhost:${port}`);
+    console.log(`Server: http://localhost:${port}`);
     console.log(`Swagger: http://localhost:${port}/api-docs`);
     console.log(`Access token expires in: ${ACCESS_EXPIRES_IN}`);
     console.log(`Refresh token expires in: ${REFRESH_EXPIRES_IN}`);
+    console.log(`Redis cache: users (60s), products (600s)`);
+});
+
+process.on('SIGINT', async () => {
+    redisClient.quit();
+    console.log('\nRedis disconnected');
+    process.exit(0);
 });
